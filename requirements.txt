@@ -1,0 +1,12 @@
+# requirements.txt
+
+# Web应用框架
+streamlit>=1.28.0
+
+# 数据处理与科学计算
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.10.0
+
+# 交互式数据可视化
+plotly>=5.14.0
