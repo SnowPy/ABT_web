@@ -10,22 +10,50 @@ import os
 # ==========================================
 # 0. 全局配置 & CSS
 # ==========================================
-st.set_page_config(page_title="熊猫实验中心 V3.8 (修复版)", layout="wide")
+st.set_page_config(page_title="熊猫实验中心 V3.9 (Pro)", layout="wide")
 
 st.markdown("""
 <style>
-    .metric-card { padding: 20px; border-radius: 10px; border: 1px solid #eee; text-align: center; margin-bottom: 10px; transition: transform 0.2s; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-    .metric-card:hover { transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
-    .card-pos { background-color: rgba(46, 204, 113, 0.1); border-top: 4px solid #2ECC71; }
-    .card-neg { background-color: rgba(231, 76, 60, 0.1); border-top: 4px solid #E74C3C; }
-    .card-neu { background-color: #f8f9fa; border-top: 4px solid #bdc3c7; color: #7f8c8d; }
-    .m-title { font-size: 0.9em; font-weight: bold; color: #555; text-transform: uppercase; letter-spacing: 1px; }
-    .m-val { font-size: 1.8em; font-weight: 800; margin: 10px 0; color: #333; }
-    .m-lift { font-weight: bold; font-size: 1.1em; }
-    .m-sig { font-size: 0.8em; margin-top: 5px; font-style: italic; opacity: 0.8; }
+    .metric-card { 
+        background-color: white;
+        padding: 0px; 
+        border-radius: 12px; 
+        border: 1px solid #e0e0e0; 
+        text-align: center; 
+        margin-bottom: 15px; 
+        transition: all 0.2s ease-in-out; 
+        box-shadow: 0 4px 6px rgba(0,0,0,0.04); 
+        overflow: hidden;
+    }
+    .metric-card:hover { transform: translateY(-3px); box-shadow: 0 8px 15px rgba(0,0,0,0.1); }
+    
+    /* 顶部状态条 */
+    .card-pos { border-top: 6px solid #2ECC71; }
+    .card-neg { border-top: 6px solid #E74C3C; }
+    .card-neu { border-top: 6px solid #bdc3c7; }
+    
+    /* 内容区域 */
+    .m-content { padding: 20px 15px 10px 15px; }
+    .m-title { font-size: 0.85em; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 5px;}
+    .m-val { font-size: 1.8em; font-weight: 800; color: #2c3e50; line-height: 1.2; }
+    .m-lift { font-weight: bold; font-size: 1.1em; margin: 8px 0; display: flex; justify-content: center; align-items: center; gap: 5px;}
+    
+    /* 底部详情条 */
+    .m-footer { 
+        background-color: #f8f9fa; 
+        padding: 10px; 
+        border-top: 1px solid #eee; 
+        font-size: 0.75em; 
+        color: #666;
+        display: flex;
+        justify-content: space-around;
+    }
+    .m-footer-item { display: flex; flex-direction: column; line-height: 1.3; }
+    .mf-label { font-weight: 600; color: #aaa; font-size: 0.9em; }
+    
     .text-pos { color: #27ae60; }
     .text-neg { color: #c0392b; }
-    .text-neu { color: #7f8c8d; }
+    .text-neu { color: #95a5a6; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -55,35 +83,86 @@ def get_template_list(module_name):
     files = [f for f in os.listdir(TEMPLATE_DIR) if f.startswith(f"{module_name}_") and f.endswith(".json")]
     return [f.replace(f"{module_name}_", "").replace(".json", "") for f in files]
 
-# --- 状态初始化助手 (关键修复) ---
 def init_state(key, default_value):
     """如果 key 不在 session_state 中，则初始化它"""
     if key not in st.session_state:
         st.session_state[key] = default_value
 
-# --- 算法引擎 ---
-def get_stats_pack(val_a, n_a, std_a, val_b, n_b, std_b, metric_type='mean', is_two_sided=True):
+# --- 核心算法引擎 (升级版: 含 CI 与 Power) ---
+def get_stats_pack(val_a, n_a, std_a, val_b, n_b, std_b, metric_type='mean', is_two_sided=True, alpha=0.05):
+    """
+    计算核心统计指标：Lift, P-value, CI (置信区间), Power (统计功效)
+    """
+    # 1. 基础计算
     base_a = val_a / n_a if n_a > 0 else 0
     base_b = val_b / n_b if n_b > 0 else 0
-    lift = (base_b - base_a) / base_a if base_a != 0 else 0
+    diff = base_b - base_a
+    lift = diff / base_a if base_a != 0 else 0
+    
     p_val = 1.0
+    se_diff = 0.0
+    power_val = 0.0
+    ci_low, ci_high = 0.0, 0.0
+    
     if n_a > 1 and n_b > 1: 
+        # 2. 标准误差 (SE) 计算
         if metric_type == 'mean':
+            # Mean: Welch's t-test assumption (unequal variances)
             if std_a > 0 or std_b > 0:
-                se = np.sqrt((std_a**2 / n_a) + (std_b**2 / n_b))
-                if se > 0:
-                    t_stat = (base_b - base_a) / se
-                    df = n_a + n_b - 2
-                    p_val = stats.t.sf(np.abs(t_stat), df) * 2 if is_two_sided else stats.t.sf(t_stat, df)
+                se_diff = np.sqrt((std_a**2 / n_a) + (std_b**2 / n_b))
         elif metric_type == 'prop':
-            pool_p = (val_a + val_b) / (n_a + n_b)
-            se = np.sqrt(pool_p * (1 - pool_p) * (1/n_a + 1/n_b))
-            if se > 0:
-                z = (base_b - base_a) / se
-                p_val = stats.norm.sf(abs(z)) * 2 if is_two_sided else stats.norm.sf(z)
+            # Prop: Pooled SE (often used for p-value) vs Unpooled SE (better for CI)
+            # 这里为了区间估计的一致性，使用 Unpooled SE 计算 CI
+            p_a = base_a
+            p_b = base_b
+            se_diff = np.sqrt(p_a*(1-p_a)/n_a + p_b*(1-p_b)/n_b)
+
+        # 3. 推断统计 (P-value, CI, Power)
+        if se_diff > 0:
+            # --- P-Value ---
+            z_score = diff / se_diff
+            if is_two_sided:
+                p_val = stats.norm.sf(abs(z_score)) * 2
+                crit_val = stats.norm.ppf(1 - alpha/2)
+            else:
+                p_val = stats.norm.sf(z_score)
+                crit_val = stats.norm.ppf(1 - alpha)
+            
+            # --- Confidence Interval (Absolute & Relative) ---
+            # Absolute CI
+            ci_abs_low = diff - crit_val * se_diff
+            ci_abs_high = diff + crit_val * se_diff
+            
+            # Relative CI (转化为相对于 base_a 的百分比)
+            # 注意：这是 Delta Method 的简化近似，假设分母 base_a 相对稳定
+            if base_a != 0:
+                ci_low = ci_abs_low / base_a
+                ci_high = ci_abs_high / base_a
+            
+            # --- Observed Power (Post-hoc) ---
+            # 计算在当前样本量下，检测出"当前观测差异(diff)"的概率
+            # Power = P(reject H0 | H1 is true)
+            # Shift the distribution by z_score
+            # approx power calculation
+            power_val = stats.norm.cdf(abs(z_score) - crit_val)
+            # 如果是单侧且 diff 为负，power 可能很小，这里取绝对值代表检测"差异"的能力
+            
+    # 4. 状态判定
     state = 'neu'
-    if p_val < 0.05: state = 'pos' if lift > 0 else 'neg'
-    return {'base_b': base_b, 'lift': lift, 'p': p_val, 'state': state}
+    if p_val < alpha: 
+        state = 'pos' if lift > 0 else 'neg'
+        
+    return {
+        'base_a': base_a,
+        'base_b': base_b,
+        'lift': lift,
+        'p': p_val,
+        'state': state,
+        'ci_low': ci_low,
+        'ci_high': ci_high,
+        'power': power_val,
+        'se': se_diff
+    }
 
 def calc_sample_size_prop(p_baseline, mde_rel, alpha=0.05, power=0.8, is_two_sided=True):
     p1 = p_baseline
@@ -108,7 +187,10 @@ def calc_sample_size_mean(mu, sigma, mde_rel, alpha=0.05, power=0.8, is_two_side
 # 2. 侧边栏：核心模式导航
 # ==========================================
 st.sidebar.title("🐼 熊猫实验中心")
-app_mode = st.sidebar.radio("功能模块", ["📊 实验结果归因 (Analysis)", "🧪 实验设计 (Design)"], index=0)
+app_mode = st.sidebar.radio("功能模块", 
+    ["📊 实验结果归因 (Analysis)", "🧪 实验设计 (Design)", "🔮 贝叶斯推断 (Bayesian)"], 
+    index=0
+)
 st.sidebar.markdown("---")
 
 # ==========================================
@@ -116,25 +198,24 @@ st.sidebar.markdown("---")
 # ==========================================
 if app_mode == "📊 实验结果归因 (Analysis)":
     
-    # --- 1. 预初始化 Session State (Analysis) ---
-    # 关键步骤：先定义好所有默认值，后续 input 不再传 value 参数
+    # --- 1. 预初始化 Session State ---
     init_state('g_uv_a', 10000)
     init_state('g_rev_a', 50000.0)
     init_state('g_pay_a', 500)
     init_state('g_std_a', 120.0)
     init_state('g_uv_b', 10000)
-    init_state('g_rev_b', 55000.0)
-    init_state('g_pay_b', 480)
-    init_state('g_std_b', 140.0)
+    init_state('g_rev_b', 56000.0) # 稍微调高一点以便展示显著性
+    init_state('g_pay_b', 520)
+    init_state('g_std_b', 125.0)
     init_state('is_two_sided_mode_an', True)
     
     if 'node_list' not in st.session_state:
         st.session_state.node_list = [
-            {"name": "详情页", "ua": 8000, "pa": 500, "ra": 50000, "sa": 120, "ub": 8200, "pb": 480, "rb": 55000, "sb": 140},
-            {"name": "加购",   "ua": 4000, "pa": 500, "ra": 50000, "sa": 120, "ub": 3000, "pb": 480, "rb": 55000, "sb": 140},
+            {"name": "详情页", "ua": 8000, "pa": 500, "ra": 50000, "sa": 120, "ub": 8200, "pb": 510, "rb": 56000, "sb": 125},
+            {"name": "加购",   "ua": 4000, "pa": 500, "ra": 50000, "sa": 120, "ub": 4050, "pb": 480, "rb": 55000, "sb": 140},
         ]
     
-    # --- 2. 模板管理 (Analysis) ---
+    # --- 2. 模板管理 ---
     st.sidebar.subheader("💾 模板管理")
     an_templates = get_template_list("analysis")
     
@@ -144,18 +225,16 @@ if app_mode == "📊 实验结果归因 (Analysis)":
         if selected_template != "-- 请选择 --":
             data = load_template("analysis", selected_template)
             if data:
-                # 严格类型转换，防止 JSON 数字类型错乱导致组件报错
                 for k, v in data.items():
                     if k == 'node_list':
                         st.session_state[k] = v
-                    elif isinstance(st.session_state.get(k), int):
-                        st.session_state[k] = int(v) # 强制转回 int
-                    elif isinstance(st.session_state.get(k), float):
-                        st.session_state[k] = float(v) # 强制转回 float
-                    else:
-                        st.session_state[k] = v
+                    elif k in st.session_state:
+                         # 简单的类型恢复
+                        if isinstance(st.session_state[k], int): st.session_state[k] = int(v)
+                        elif isinstance(st.session_state[k], float): st.session_state[k] = float(v)
+                        else: st.session_state[k] = v
                 
-                # 同步动态节点的 Key
+                # 同步动态节点 Key
                 if 'node_list' in data:
                     for i, node in enumerate(data['node_list']):
                         st.session_state[f"name_{i}"] = node['name']
@@ -192,7 +271,7 @@ if app_mode == "📊 实验结果归因 (Analysis)":
                 st.rerun()
     st.sidebar.markdown("---")
 
-    # --- 3. 输入区 (移除 value 参数，依赖 session_state) ---
+    # --- 3. 输入区 ---
     st.sidebar.subheader("1. 统计设置")
     
     test_mode_idx = 0 if st.session_state.is_two_sided_mode_an else 1
@@ -200,11 +279,12 @@ if app_mode == "📊 实验结果归因 (Analysis)":
     st.session_state.is_two_sided_mode_an = (test_mode == "双侧检验 (Two-sided)")
     is_two_sided_mode = st.session_state.is_two_sided_mode_an
     
+    alpha_val = st.sidebar.number_input("显著性水平 (α)", value=0.05, step=0.01, min_value=0.01, max_value=0.20)
+
     with st.sidebar.expander("2. 全局基础数据", expanded=True):
         col_ga, col_gb = st.columns(2)
         with col_ga:
             st.markdown("🅰️ **对照组**")
-            # 【修复点】: 移除了 value=...，Streamlit 会自动使用 session_state[key] 的值和类型
             st.number_input("总 UV", min_value=0, key='g_uv_a')
             st.number_input("总营收", min_value=0.0, key='g_rev_a')
             st.number_input("总付费", min_value=0, key='g_pay_a')
@@ -220,13 +300,12 @@ if app_mode == "📊 实验结果归因 (Analysis)":
     c_add, c_reset = st.sidebar.columns([1,1])
     if c_add.button("➕ 新增节点"):
         st.session_state.node_list.append({"name": "新节点", "ua": 0, "pa": 0, "ra": 0.0, "sa": 0.0, "ub": 0, "pb": 0, "rb": 0.0, "sb": 0.0})
-        st.rerun() # 强制刷新以初始化新节点的 Key
+        st.rerun()
     if c_reset.button("🔄 重置数据"):
         st.session_state.node_list = []
         st.rerun()
 
     for i, node in enumerate(st.session_state.node_list):
-        # 预初始化动态节点的 key
         init_state(f"name_{i}", node['name'])
         init_state(f"ua_{i}", node['ua'])
         init_state(f"pa_{i}", node['pa'])
@@ -251,7 +330,6 @@ if app_mode == "📊 实验结果归因 (Analysis)":
                 st.number_input("营收 (B)", min_value=0.0, key=f"rb_{i}")
                 st.number_input("Std (B)", min_value=0.0, key=f"sb_{i}")
             
-            # 将 Widget 的值同步回 node_list (用于计算和保存)
             st.session_state.node_list[i]['name'] = st.session_state[f"name_{i}"]
             st.session_state.node_list[i]['ua'] = st.session_state[f"ua_{i}"]
             st.session_state.node_list[i]['pa'] = st.session_state[f"pa_{i}"]
@@ -262,7 +340,6 @@ if app_mode == "📊 实验结果归因 (Analysis)":
             st.session_state.node_list[i]['rb'] = st.session_state[f"rb_{i}"]
             st.session_state.node_list[i]['sb'] = st.session_state[f"sb_{i}"]
 
-    # 获取 widget 更新后的值用于计算
     g_uv_a = st.session_state['g_uv_a']
     g_rev_a = st.session_state['g_rev_a']
     g_pay_a = st.session_state['g_pay_a']
@@ -281,22 +358,51 @@ if app_mode == "📊 实验结果归因 (Analysis)":
     # --- Analysis Logic ---
     st.title("🐼 实验结果归因 (Analysis)")
     
-    g_arpu = get_stats_pack(g_rev_a, g_uv_a, g_std_a, g_rev_b, g_uv_b, g_std_b, 'mean', is_two_sided_mode)
-    g_cvr = get_stats_pack(g_pay_a, g_uv_a, 0, g_pay_b, g_uv_b, 0, 'prop', is_two_sided_mode)
-    g_asp = get_stats_pack(g_rev_a, g_pay_a, g_std_a, g_rev_b, g_pay_b, g_std_b, 'mean', is_two_sided_mode)
+    # 计算核心指标 (ARPU, CVR, ASP)
+    # ARPU: Mean metric
+    g_arpu = get_stats_pack(g_rev_a, g_uv_a, g_std_a, g_rev_b, g_uv_b, g_std_b, 'mean', is_two_sided_mode, alpha_val)
+    # CVR: Prop metric (std=0 placeholder)
+    g_cvr = get_stats_pack(g_pay_a, g_uv_a, 0, g_pay_b, g_uv_b, 0, 'prop', is_two_sided_mode, alpha_val)
+    # ASP: Mean metric
+    g_asp = get_stats_pack(g_rev_a, g_pay_a, g_std_a, g_rev_b, g_pay_b, g_std_b, 'mean', is_two_sided_mode, alpha_val)
 
     def render_html_card(title, res, is_pct=False):
         icon = "▲" if res['lift'] > 0 else "▼"
         val_fmt = f"{res['base_b']*100:.2f}%" if is_pct else f"¥{res['base_b']:.2f}"
-        if res['state'] == 'pos': sig_text = "显著提升 (Significant)"
-        elif res['state'] == 'neg': sig_text = "显著下降 (Significant)"
-        else: sig_text = "差异不显著 (Not Sig)"
+        
+        # 显著性文本
+        if res['state'] == 'pos': sig_text = "显著提升"
+        elif res['state'] == 'neg': sig_text = "显著下降"
+        else: sig_text = "差异不显著"
+        
+        # CI 格式化
+        ci_low_fmt = f"{res['ci_low']*100:+.2f}%"
+        ci_high_fmt = f"{res['ci_high']*100:+.2f}%"
+        
+        # Power 颜色：低于 0.8 显示警告色
+        power_color = "#e67e22" if res['power'] < 0.8 else "#2c3e50"
+        
         return f"""
         <div class="metric-card card-{res['state']}">
-            <div class="m-title">{title}</div>
-            <div class="m-val">{val_fmt}</div>
-            <div class="m-lift text-{res['state']}">{icon} {abs(res['lift']*100):.2f}%</div>
-            <div class="m-sig">P = {res['p']:.3f}<br>{sig_text}</div>
+            <div class="m-content">
+                <div class="m-title">{title}</div>
+                <div class="m-val">{val_fmt}</div>
+                <div class="m-lift text-{res['state']}">
+                    {icon} {abs(res['lift']*100):.2f}%
+                    <span style="font-size:0.7em; margin-left:5px; opacity:0.7"> (P={res['p']:.3f})</span>
+                </div>
+            </div>
+            <div class="m-footer">
+                <div class="m-footer-item">
+                    <span class="mf-label">95% CI (Lift)</span>
+                    <span style="font-family: monospace;">[{ci_low_fmt}, {ci_high_fmt}]</span>
+                </div>
+                <div style="border-left:1px solid #ddd;"></div>
+                <div class="m-footer-item">
+                    <span class="mf-label">Power (1-β)</span>
+                    <span style="color:{power_color}; font-weight:bold;">{res['power']:.2f}</span>
+                </div>
+            </div>
         </div>
         """
 
@@ -315,36 +421,67 @@ if app_mode == "📊 实验结果归因 (Analysis)":
         insights = []
         for _, row in node_df.iterrows():
             name = row['节点名称']
-            r_arpu = get_stats_pack(row['营收_A'], row['UV_A'], row['Std_A'], row['营收_B'], row['UV_B'], row['Std_B'], 'mean', is_two_sided_mode)
-            r_cvr = get_stats_pack(row['付费数_A'], row['UV_A'], 0, row['付费数_B'], row['UV_B'], 0, 'prop', is_two_sided_mode)
-            r_asp = get_stats_pack(row['营收_A'], row['付费数_A'], row['Std_A'], row['营收_B'], row['付费数_B'], row['Std_B'], 'mean', is_two_sided_mode)
+            r_arpu = get_stats_pack(row['营收_A'], row['UV_A'], row['Std_A'], row['营收_B'], row['UV_B'], row['Std_B'], 'mean', is_two_sided_mode, alpha_val)
+            r_cvr = get_stats_pack(row['付费数_A'], row['UV_A'], 0, row['付费数_B'], row['UV_B'], 0, 'prop', is_two_sided_mode, alpha_val)
+            r_asp = get_stats_pack(row['营收_A'], row['付费数_A'], row['Std_A'], row['营收_B'], row['付费数_B'], row['Std_B'], 'mean', is_two_sided_mode, alpha_val)
+            
             for m, res in zip(['Node-ARPU', 'Node-CVR', 'Node-ASP'], [r_arpu, r_cvr, r_asp]):
-                plot_data.append({'node': name, 'metric': m, 'lift': res['lift'], 'state': res['state'], 'p': res['p']})
+                plot_data.append({
+                    'node': name, 'metric': m, 
+                    'lift': res['lift'], 'state': res['state'], 'p': res['p'],
+                    'ci_low': res['ci_low'], 'ci_high': res['ci_high'] # 绘图可用 error bar
+                })
+            
             if r_cvr['state']=='neg' and r_asp['state']=='pos':
                 insights.append(f"⚖️ **[{name}]** 出现“洗用户”现象：转化率跌 {r_cvr['lift']*100:.1f}% 但客单价涨 {r_asp['lift']*100:.1f}%。")
 
         df_plot = pd.DataFrame(plot_data)
         color_map = {'pos': '#2ECC71', 'neg': '#E74C3C', 'neu': '#95a5a6'}
+        
         fig = make_subplots(rows=1, cols=3, subplot_titles=("Node-ARPU", "Node-CVR", "Node-ASP"), shared_yaxes=True)
         metrics = ['Node-ARPU', 'Node-CVR', 'Node-ASP']
 
         for i, m in enumerate(metrics):
             d = df_plot[df_plot['metric'] == m]
-            for _, r in d.iterrows():
-                fig.add_shape(type="line", x0=0, y0=r['node'], x1=r['lift'], y1=r['node'], line=dict(color=color_map[r['state']], width=2), row=1, col=i+1)
-            marker_symbols = ['circle' if r['p'] < 0.05 else 'circle-open' for _, r in d.iterrows()]
-            marker_sizes = [14 if r['p'] < 0.05 else 10 for _, r in d.iterrows()]
+            
+            # Error Bars (CI)
+            # Plotly error_x 需要是绝对长度，不是坐标点
+            # lift is x, ci_low is x_min. error_minus = lift - ci_low
+            
+            error_y_pos = [r['ci_high'] - r['lift'] for _, r in d.iterrows()]
+            error_y_neg = [r['lift'] - r['ci_low'] for _, r in d.iterrows()]
+
             fig.add_trace(go.Scatter(
-                x=d['lift'], y=d['node'], mode='markers+text',
-                marker=dict(color=[color_map[x] for x in d['state']], symbol=marker_symbols, size=marker_sizes, line=dict(width=2, color=[color_map[x] for x in d['state']])),
-                text=[f"{x*100:.1f}%" for x in d['lift']], textposition="top center", textfont=dict(size=10, color="#555"), showlegend=False
+                x=d['lift'], y=d['node'], 
+                mode='markers+text',
+                error_x=dict(
+                    type='data',
+                    symmetric=False,
+                    array=error_y_pos,
+                    arrayminus=error_y_neg,
+                    color='#ccc',
+                    thickness=1,
+                    width=3
+                ),
+                marker=dict(
+                    color=[color_map[x] for x in d['state']], 
+                    size=12,
+                    line=dict(width=2, color='white')
+                ),
+                text=[f"{x*100:.1f}%" for x in d['lift']], 
+                textposition="top center", 
+                textfont=dict(size=10, color="#555"), 
+                showlegend=False
             ), row=1, col=i+1)
-            fig.add_vline(x=0, line_dash="dash", line_color="#ccc", row=1, col=i+1)
+            
+            # 0 线
+            fig.add_vline(x=0, line_dash="dash", line_color="#ddd", row=1, col=i+1)
         
         fig.update_layout(height=400, showlegend=False, yaxis={'autorange': "reversed"}, margin=dict(t=50))
         fig.update_xaxes(tickformat=".0%")
         st.plotly_chart(fig, use_container_width=True)
-        st.caption("🔴/🟢 实心点 = P<0.05 (Significant); ⚪ 空心点 = P≥0.05")
+        st.caption("ℹ️ 图中灰色横线代表 95% 置信区间 (Confidence Interval)。若横线穿过 0 轴，则差异通常不显著。")
+        
         if insights: st.info("\n".join(insights))
 
 # ==========================================
@@ -352,7 +489,6 @@ if app_mode == "📊 实验结果归因 (Analysis)":
 # ==========================================
 elif app_mode == "🧪 实验设计 (Design)":
     
-    # --- 1. 预初始化 (Design) ---
     init_state('alpha_input', 0.05)
     init_state('power_input', 0.80)
     init_state('daily_traffic', 1000)
@@ -363,7 +499,6 @@ elif app_mode == "🧪 实验设计 (Design)":
     init_state('mde_mean_raw', 5.0)
     init_state('is_two_sided_design_mode', True)
 
-    # --- 2. 模板管理 (Design) ---
     st.sidebar.subheader("💾 模板管理")
     de_templates = get_template_list("design")
     col_t1, col_t2 = st.sidebar.columns([2, 1])
@@ -398,7 +533,6 @@ elif app_mode == "🧪 实验设计 (Design)":
 
     st.title("🧪 样本量估算 (Sample Size Calculator)")
     
-    # --- Input Configuration (移除 value 参数) ---
     with st.sidebar:
         st.subheader("1. 统计参数设置")
         alpha_input = st.number_input("显著性水平 (α)", step=0.01, key='alpha_input')
@@ -415,7 +549,6 @@ elif app_mode == "🧪 实验设计 (Design)":
 
     tab1, tab2 = st.tabs(["📊 转化率类指标 (CVR)", "💰 数值类指标 (ARPU/ASP)"])
     
-    # TAB 1: CVR
     with tab1:
         c1, c2 = st.columns(2)
         with c1:
@@ -441,7 +574,6 @@ elif app_mode == "🧪 实验设计 (Design)":
             fig_sens.update_layout(xaxis_title="预期相对提升 (MDE %)", yaxis_title="单组样本量", height=300, margin=dict(t=20, l=20, r=20, b=20))
             st.plotly_chart(fig_sens, use_container_width=True)
 
-    # TAB 2: ARPU
     with tab2:
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -468,3 +600,203 @@ elif app_mode == "🧪 实验设计 (Design)":
             fig_sens_m.add_trace(go.Scatter(x=[mde_mean_pct*100], y=[req_n_mean], mode='markers', marker=dict(color='red', size=12), name='当前设定'))
             fig_sens_m.update_layout(xaxis_title="预期相对提升 (MDE %)", yaxis_title="单组样本量", height=300, margin=dict(t=20, l=20, r=20, b=20))
             st.plotly_chart(fig_sens_m, use_container_width=True)
+
+# ==========================================
+# 5. 模块 C: 贝叶斯推断 (Bayesian) - 升级版
+# ==========================================
+elif app_mode == "🔮 贝叶斯推断 (Bayesian)":
+    
+    # 状态初始化
+    init_state('bay_vis_a', 500)
+    init_state('bay_conv_a', 45)
+    init_state('bay_rev_a', 1500.0) # 新增：收入
+    
+    init_state('bay_vis_b', 520)
+    init_state('bay_conv_b', 62)
+    init_state('bay_rev_b', 2100.0) # 新增：收入
+    
+    init_state('bay_prior_strength', '弱先验 (Weak)')
+    init_state('bay_loss_threshold', 0.01) # 决策阈值
+
+    st.title("🔮 贝叶斯推断 (Bayesian Inference)")
+    st.markdown("""
+    > **适用场景**: 小流量/小样本实验。  
+    > **核心模型**: 
+    > * **转化率 (CVR)**: Beta-Binomial 模型
+    > * **ARPU (每用户收入)**: Hurdle Model (CVR $\\times$ ARPPU) + 蒙特卡罗模拟
+    """)
+    st.divider()
+
+    # --- Sidebar Inputs ---
+    with st.sidebar:
+        st.subheader("1. 实验数据录入")
+        
+        col_ba, col_bb = st.columns(2)
+        with col_ba:
+            st.markdown("🅰️ **对照组 (A)**")
+            st.number_input("样本量 (N)", min_value=1, key='bay_vis_a')
+            st.number_input("转化人数 (K)", min_value=0, key='bay_conv_a')
+            st.number_input("总收入 (Rev)", min_value=0.0, key='bay_rev_a')
+        with col_bb:
+            st.markdown("🅱️ **实验组 (B)**")
+            st.number_input("样本量 (N)", min_value=1, key='bay_vis_b')
+            st.number_input("转化人数 (K)", min_value=0, key='bay_conv_b')
+            st.number_input("总收入 (Rev)", min_value=0.0, key='bay_rev_b')
+            
+        st.markdown("---")
+        st.subheader("2. 参数配置")
+        st.selectbox(
+            "先验认知强度", 
+            ["弱先验 (Weak)", "乐观先验 (Optimistic)"],
+            key='bay_prior_strength',
+            help="弱先验假设我们对A/B没有任何预设偏好 (Beta(1,1))"
+        )
+        st.number_input(
+            "风险容忍阈值 (Loss Threshold)", 
+            value=0.05, step=0.01, 
+            key='bay_loss_threshold',
+            help="如果B实际上比A差，你最多能容忍ARPU亏多少？"
+        )
+        st.info("💡 系统会自动进行 100,000 次蒙特卡罗模拟")
+
+    # --- Calculation Engine (Monte Carlo) ---
+    SIM_SIZE = 100000
+    np.random.seed(42)
+    
+    # 获取输入
+    N_a, K_a, R_a = st.session_state.bay_vis_a, st.session_state.bay_conv_a, st.session_state.bay_rev_a
+    N_b, K_b, R_b = st.session_state.bay_vis_b, st.session_state.bay_conv_b, st.session_state.bay_rev_b
+    
+    # 1. CVR Posterior: Beta Distribution
+    # Prior: Beta(1,1) for Weak
+    prior_alpha, prior_beta = (1, 1) if st.session_state.bay_prior_strength.startswith("弱") else (5, 95)
+    
+    cvr_samples_a = stats.beta.rvs(prior_alpha + K_a, prior_beta + N_a - K_a, size=SIM_SIZE)
+    cvr_samples_b = stats.beta.rvs(prior_alpha + K_b, prior_beta + N_b - K_b, size=SIM_SIZE)
+    
+    # 2. ARPPU Posterior: Inverse Gamma Logic (via Gamma Rate Parameter)
+    # Model: Revenue ~ Exponential(lambda) => Mean = 1/lambda
+    # Prior on lambda: Gamma(alpha, beta). Posterior lambda: Gamma(alpha+K, beta+Rev)
+    # Weak Prior for Gamma: alpha=0.001, beta=0.001 (Uninformative)
+    g_alpha, g_beta = 0.001, 0.001
+    
+    # Prevent division by zero if K=0
+    if K_a > 0:
+        lambda_a = stats.gamma.rvs(a=g_alpha + K_a, scale=1/(g_beta + R_a), size=SIM_SIZE)
+        arppu_samples_a = 1 / lambda_a
+    else:
+        arppu_samples_a = np.zeros(SIM_SIZE)
+        
+    if K_b > 0:
+        lambda_b = stats.gamma.rvs(a=g_alpha + K_b, scale=1/(g_beta + R_b), size=SIM_SIZE)
+        arppu_samples_b = 1 / lambda_b
+    else:
+        arppu_samples_b = np.zeros(SIM_SIZE)
+
+    # 3. ARPU (Hurdle Model Combination)
+    # ARPU = CVR * ARPPU
+    arpu_samples_a = cvr_samples_a * arppu_samples_a
+    arpu_samples_b = cvr_samples_b * arppu_samples_b
+    
+    # --- Metrics Calculation ---
+    # Probability B > A
+    prob_b_win = (arpu_samples_b > arpu_samples_a).mean()
+    
+    # Expected Uplift (Relative)
+    # Avoid div by zero
+    safe_a = np.where(arpu_samples_a == 0, 1e-9, arpu_samples_a)
+    uplift_dist = (arpu_samples_b - arpu_samples_a) / safe_a
+    expected_uplift = np.median(uplift_dist) # Use median for stability in ratios
+    
+    # Expected Loss (Absolute Value Risk)
+    # Loss = Mean of (A - B) where A > B
+    loss_dist = np.maximum(arpu_samples_a - arpu_samples_b, 0)
+    expected_loss = loss_dist.mean()
+    
+    # Current Observed ARPU
+    obs_arpu_a = R_a / N_a if N_a > 0 else 0
+    obs_arpu_b = R_b / N_b if N_b > 0 else 0
+
+    # --- UI Rendering ---
+    
+    # Top Cards
+    c1, c2, c3 = st.columns(3)
+    
+    # Card 1: Win Probability
+    color_win = "normal"
+    if prob_b_win > 0.95: label_win = "建议上线 (High Confidence)"
+    elif prob_b_win > 0.8: label_win = "潜力观察 (Positive)"
+    else: label_win = "风险较高/无差异"
+    
+    c1.metric(
+        "🏆 B 胜出的概率 (Win Rate)", 
+        f"{prob_b_win*100:.1f}%",
+        delta=label_win,
+        delta_color="normal" if prob_b_win > 0.5 else "inverse"
+    )
+    
+    # Card 2: Expected Uplift
+    c2.metric(
+        "📈 预期 ARPU 提升 (Uplift)", 
+        f"{expected_uplift*100:.2f}%",
+        help="B 版本相对 A 版本 ARPU 的提升幅度中位数"
+    )
+    
+    # Card 3: Expected Loss (Risk)
+    is_safe = expected_loss < st.session_state.bay_loss_threshold
+    c3.metric(
+        "🛡️ 潜在风险 (Expected Loss)", 
+        f"{expected_loss:.4f}",
+        delta="风险可控" if is_safe else "风险过高",
+        delta_color="normal" if is_safe else "inverse",
+        help=f"如果选错了 B，平均每用户可能亏损的金额。阈值设定为 {st.session_state.bay_loss_threshold}"
+    )
+
+    # Tabs for Visuals
+    t_main, t_cvr, t_arppu = st.tabs(["📊 ARPU 综合决策", "🔍 转化率分布", "💰 ARPPU 分布"])
+    
+    with t_main:
+        st.markdown("#### ARPU 后验分布对比 (Posterior Density)")
+        st.caption(f"基于 Hurdle Model ($CVR \\times ARPPU$) 的 10w 次模拟结果。观测 ARPU: A={obs_arpu_a:.2f}, B={obs_arpu_b:.2f}")
+        
+        fig_arpu = go.Figure()
+        # Histogram/KDE approximation using density hist
+        fig_arpu.add_trace(go.Histogram(x=arpu_samples_a, histnorm='probability density', name='Control A', marker_color='#95a5a6', opacity=0.6))
+        fig_arpu.add_trace(go.Histogram(x=arpu_samples_b, histnorm='probability density', name='Variant B', marker_color='#2ECC71', opacity=0.6))
+        
+        fig_arpu.update_layout(
+            xaxis_title="ARPU (Value)", yaxis_title="Density",
+            barmode='overlay', height=350, margin=dict(t=10)
+        )
+        st.plotly_chart(fig_arpu, use_container_width=True)
+        
+        # Risk / Decision Logic Text
+        if prob_b_win > 0.90 and is_safe:
+            st.success(f"✅ **决策建议：发布 B 版本**。胜率高 ({prob_b_win*100:.1f}%) 且潜在损失 ({expected_loss:.4f}) 低于您的阈值。")
+        elif prob_b_win < 0.10:
+            st.error(f"🛑 **决策建议：放弃 B 版本**。A 版本胜率极高 ({100 - prob_b_win*100:.1f}%)。")
+        else:
+            st.warning(f"⚖️ **决策建议：继续实验**。虽然当前胜率为 {prob_b_win*100:.1f}%，但尚未达到 95% 确信度或风险 ({expected_loss:.4f}) 仍需关注。")
+
+    with t_cvr:
+        st.markdown("#### 转化率 (CVR) 独立分析")
+        fig_cvr = go.Figure()
+        x_cvr = np.linspace(0, max(cvr_samples_a.max(), cvr_samples_b.max())*1.1, 500)
+        # Analytical Beta PDF for smooth lines
+        y_a_cvr = stats.beta.pdf(x_cvr, prior_alpha + K_a, prior_beta + N_a - K_a)
+        y_b_cvr = stats.beta.pdf(x_cvr, prior_alpha + K_b, prior_beta + N_b - K_b)
+        
+        fig_cvr.add_trace(go.Scatter(x=x_cvr, y=y_a_cvr, fill='tozeroy', name='CVR A', line=dict(color='#95a5a6')))
+        fig_cvr.add_trace(go.Scatter(x=x_cvr, y=y_b_cvr, fill='tozeroy', name='CVR B', line=dict(color='#3498db')))
+        fig_cvr.update_layout(height=350, xaxis_title="Conversion Rate")
+        st.plotly_chart(fig_cvr, use_container_width=True)
+
+    with t_arppu:
+        st.markdown("#### 客单价 (ARPPU) 独立分析")
+        st.caption("注：仅统计付费用户的平均价值分布 (Gamma-Inverse Model)")
+        fig_arppu = go.Figure()
+        # Use histograms for derived samples
+        fig_arppu.add_trace(go.Histogram(x=arppu_samples_a, histnorm='probability density', name='ARPPU A', marker_color='#95a5a6', opacity=0.6))
+        fig_arppu.add_trace(go.Histogram(x=arppu_samples_b, histnorm='probability density', name='ARPPU B', marker_color='#e67e22', opacity=0.6))
+        fig_arppu.update_layout(height=350, barmode='overlay', xaxis_title="Average Revenue Per Paying User")
+        st.plotly_chart(fig_arppu, use_container_width=True)
